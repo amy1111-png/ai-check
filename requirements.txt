@@ -1,7 +1,7 @@
 streamlit
 requests
+pdfplumber
+python-docx
 pandas
 openpyxl
-python-docx
-pdfplumber
 Pillow
