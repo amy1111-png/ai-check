@@ -5,14 +5,13 @@ import base64
 import pandas as pd
 from docx import Document
 import pdfplumber
-import time  # 增加時間模組用於重試
+import time
 
 st.set_page_config(page_title="AI 簽呈大師", layout="wide")
 st.title("⚖️ AI 簽呈與附件深度分析系統")
 
 # --- 第一步：API 設定 ---
 st.subheader("🔑 第一步：設定 API Key")
-# 先檢查 Secrets 是否有存 Key，沒有的話才顯示輸入框
 if "GEMINI_API_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
     st.success("✅ 已自動從雲端後台讀取 API Key")
@@ -22,20 +21,6 @@ else:
 # --- 第二步：上傳檔案 ---
 st.subheader("📤 第二步：上傳檔案")
 uploaded_files = st.file_uploader("請上傳測試簽呈", type=['pdf', 'docx', 'xlsx', 'xls', 'png', 'jpg', 'jpeg'], accept_multiple_files=True)
-
-# --- 核心邏輯：自動尋找可用模型 ---
-def get_available_model(key):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
-    try:
-        res = requests.get(url, timeout=20)
-        if res.status_code == 200:
-            models = res.json().get('models', [])
-            for m in models:
-                if "gemini-1.5-flash" in m['name'] and "generateContent" in m['supportedGenerationMethods']:
-                    return m['name']
-        return "models/gemini-1.5-flash" # 預設回傳
-    except:
-        return "models/gemini-1.5-flash"
 
 def process_files(files):
     text_data, images = [], []
@@ -56,6 +41,28 @@ def process_files(files):
             text_data.append(f"【圖片:{f.name}】")
     return "\n\n".join(text_data), images
 
+# --- 核心邏輯：測試並獲取成功的響應 ---
+def call_gemini_api(key, payload):
+    # 嘗試不同的 API 版本與模型組合
+    endpoints = [
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={key}",
+        f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={key}",
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={key}"
+    ]
+    
+    last_error = ""
+    for url in endpoints:
+        try:
+            res = requests.post(url, headers={'Content-Type': 'application/json'}, data=json.dumps(payload), timeout=90)
+            if res.status_code == 200:
+                return res, None
+            else:
+                last_error = res.json().get('error', {}).get('message', '未知錯誤')
+        except Exception as e:
+            last_error = str(e)
+            continue
+    return None, last_error
+
 # --- 第三步：執行分析 ---
 st.divider()
 if st.button("🚀 啟動深度分析", type="primary"):
@@ -64,35 +71,21 @@ if st.button("🚀 啟動深度分析", type="primary"):
     elif not uploaded_files:
         st.warning("⚠️ 請上傳檔案")
     else:
-        with st.status("🛸 正在深入分析數據，請稍候 (檔案較多時需約 1 分鐘)...", expanded=True) as status:
+        with st.status("🛸 正在自動匹配模型並分析中...", expanded=True) as status:
             try:
-                model_name = get_available_model(api_key)
                 all_text, all_images = process_files(uploaded_files)
-                
-                url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={api_key}"
                 prompt = f"你是一位財務審核員。請核對金額、比對 113年 與 114年 保費數字、計算差額與百分比，並提供審核建議。內容：\n{all_text}"
                 payload = {"contents": [{"parts": [{"text": prompt}] + all_images}]}
                 
-                # --- 重試機制與加長超時設定 ---
-                max_retries = 2
-                for i in range(max_retries + 1):
-                    try:
-                        # timeout 設定為 90 秒
-                        res = requests.post(url, headers={'Content-Type': 'application/json'}, data=json.dumps(payload), timeout=90)
-                        if res.status_code == 200:
-                            status.update(label="✅ 分析完成！", state="complete")
-                            st.subheader("📊 AI 審核報告")
-                            st.markdown(res.json()['candidates'][0]['content']['parts'][0]['text'])
-                            break
-                        else:
-                            st.error(f"分析失敗：{res.json().get('error', {}).get('message')}")
-                            break
-                    except requests.exceptions.Timeout:
-                        if i < max_retries:
-                            st.warning(f"⏱️ 伺服器回應較慢，正在進行第 {i+1} 次重試...")
-                            time.sleep(2) # 等兩秒再試
-                        else:
-                            st.error("❌ Google 伺服器忙碌中，請稍後再試，或嘗試減少上傳檔案的頁數。")
+                res, err = call_gemini_api(api_key, payload)
+                
+                if res:
+                    status.update(label="✅ 分析完成！", state="complete")
+                    st.subheader("📊 AI 審核報告")
+                    st.markdown(res.json()['candidates'][0]['content']['parts'][0]['text'])
+                else:
+                    st.error(f"❌ 所有模型路徑皆嘗試失敗。原因：{err}")
+                    status.update(label="連線失敗", state="error")
                 
             except Exception as e:
-                st.error(f"發生錯誤：{str(e)}")
+                st.error(f"系統錯誤：{str(e)}")
