@@ -71,4 +71,27 @@ if uploaded_files:
                 st.error("請在左側輸入 API Key")
             else:
                 with st.status("AI 正在閱讀並比對數據...", expanded=True) as status:
-                    # 組合內容：
+                    # 組合內容：文字文字 + 圖片
+                    parts = [{"text": f"你是一位財務審核員。請核對以下 113年 與 114年 的保費數據並比對差異，列出對照表：\n\n{full_context}"}]
+                    for b64 in all_imgs:
+                        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
+                    
+                    payload = {"contents": [{"parts": parts}]}
+                    
+                    # 嘗試兩個穩定路徑，解決 404 問題
+                    success = False
+                    urls = [
+                        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={api_key}",
+                        f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
+                    ]
+                    
+                    for url in urls:
+                        res = requests.post(url, headers={'Content-Type': 'application/json'}, data=json.dumps(payload))
+                        if res.status_code == 200:
+                            status.update(label="✅ 分析完成！", state="complete")
+                            st.markdown(res.json()['candidates'][0]['content']['parts'][0]['text'])
+                            success = True
+                            break
+                    
+                    if not success:
+                        st.error(f"分析失敗。最後一次錯誤回報：{res.text}")
