@@ -1,5 +1,33 @@
+name: Daily Stock Report
+
 on:
   workflow_dispatch:
   schedule:
+    # 台灣時間 09:30 (UTC 01:30)
     - cron: '30 1 * * 1-5'
+    # 台灣時間 13:30 (UTC 05:30)
     - cron: '30 5 * * 1-5'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    # 這一行用來消除 Node.js 20 警告
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: 檢查程式碼
+        uses: actions/checkout@v4
+        
+      - name: 安裝 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: 安裝套件
+        run: pip install yfinance requests
+        
+      - name: 執行程式
+        # 配合你截圖中的檔名 my_app.py
+        run: python my_app.py
