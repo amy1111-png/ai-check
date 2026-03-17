@@ -6,15 +6,20 @@ from PIL import Image
 import io
 import base64
 
-st.set_page_config(page_title="AI 財務稽核-最終修復版", layout="wide")
-st.title("⚖️ AI 財務全能稽核系統")
+# 1. 基礎設定
+st.set_page_config(page_title="AI 財務稽核-Gemini 3 專版", layout="wide")
+st.title("⚖️ AI 財務全能稽核系統 (Gemini 3)")
 
+# 2. 側邊欄
 with st.sidebar:
     st.header("🔑 系統設定")
-    api_key = st.text_input("請貼上 API Studio 新申請的 Key", type="password").strip()
+    # 請點擊妳截圖左下角的 "Get API key" 來獲取 Key
+    api_key = st.text_input("請貼上新的 API Key", type="password").strip()
+    st.divider()
     mode = st.radio("稽核邏輯", ["診所/門市公式", "深度疑點分析 (含桃竹區劇本)"])
-    st.caption("連線模式：多重路徑暴力破解版")
+    st.info("💡 已依據您的截圖，將模型路徑修正為：gemini-3-flash-preview")
 
+# 3. 檔案處理
 def process_file(f):
     try:
         if f.name.lower().endswith('.pdf'):
@@ -24,15 +29,16 @@ def process_file(f):
             return f"表格數據:\n{pd.read_excel(f).to_string()}", None
         elif f.name.lower().endswith(('.png', '.jpg', '.jpeg')):
             img = Image.open(f).convert('RGB')
-            img.thumbnail((600, 600))
+            img.thumbnail((800, 800))
             buf = io.BytesIO()
             img.save(buf, format="JPEG")
             return None, base64.b64encode(buf.getvalue()).decode()
     except:
-        return f"無法解析: {f.name}", None
+        return f"無法解析檔案: {f.name}", None
     return "", None
 
-files = st.file_uploader("上傳檔案", accept_multiple_files=True)
+# 4. 主程式
+files = st.file_uploader("上傳簽呈、報價單或照片附件", accept_multiple_files=True)
 
 if files:
     all_text, all_img = [], []
@@ -41,37 +47,38 @@ if files:
         if t: all_text.append(t)
         if i: all_img.append(i)
 
-    if st.button("🚀 開始分析", type="primary"):
+    if st.button("🚀 啟動 Gemini 3 深度稽核", type="primary"):
         if not api_key:
-            st.error("請輸入 API Key")
+            st.error("請在側邊欄貼上 API Key")
         else:
-            prompt = f"財務稽核分析：{'原本公式' if mode == '診所/門市公式' else '比價與桃竹區異常分析+對答劇本'}\n資料：{' '.join(all_text)}"
+            # 針對妳的需求強化 Prompt
+            if mode == "診所/門市公式":
+                prompt = f"你是專業財務審核員。請核對資料並依格式總結：1.經確認... 2.費用由...。資料內容：\n{' '.join(all_text)}"
+            else:
+                prompt = f"""你是資深財務稽核主管。請針對提供的報價單與簽呈進行分析：
+                1. 財務審核結論：進行比價分析，並特別針對「桃竹區(如藝文、竹北店)」的新增費用進行合理性評估。
+                2. 不合理檢核點：找出金額異常、公式錯誤或跨區單價顯著差異之處。
+                3. 建議詢問劇本：針對上述疑點，寫出專業且能讓申請人無法迴避的詢問台詞。
+                資料內容：\n{' '.join(all_text)}"""
+
+            # 【關鍵修復】使用截圖中顯示的模型路徑
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={api_key}"
             
-            # 【核心修正：多路徑測試】
-            # 嘗試所有可能的 URL 組合
-            base_url = "https://generativelanguage.googleapis.com"
-            endpoints = [
-                "/v1beta/models/gemini-1.5-flash:generateContent",
-                "/v1/models/gemini-1.5-flash:generateContent",
-                "/v1beta/models/gemini-1.5-flash-latest:generateContent",
-                "/v1/models/gemini-pro:generateContent" # 最後保底
-            ]
+            payload = {
+                "contents": [{
+                    "parts": [{"text": prompt}] + [{"inline_data": {"mime_type": "image/jpeg", "data": i}} for i in all_img]
+                }]
+            }
             
-            success = False
-            with st.status("🛸 正在測試 4 種連線路徑...") as status:
-                for ep in endpoints:
-                    try:
-                        url = f"{base_url}{ep}?key={api_key}"
-                        payload = {"contents": [{"parts": [{"text": prompt}] + [{"inline_data": {"mime_type": "image/jpeg", "data": i}} for i in all_img]}]}
-                        res = requests.post(url, json=payload, timeout=30)
-                        if res.status_code == 200:
-                            st.markdown(res.json()['candidates'][0]['content']['parts'][0]['text'])
-                            status.update(label=f"✅ 連線成功！路徑：{ep}", state="complete")
-                            success = True
-                            break
-                    except:
-                        continue
-                
-                if not success:
-                    st.error("❌ 所有連線路徑皆失效 (404)。")
-                    st.info("💡 Amy，這代表您的 API Key 的『出生證明』不對。請務必到 aistudio.google.com 重新點擊左側的『Get API key』，並確認是用『Create API key in new project』產生的。")
+            with st.status("🛸 Gemini 3 正在進行深度勾稽...") as status:
+                try:
+                    res = requests.post(url, json=payload, timeout=60)
+                    if res.status_code == 200:
+                        ans = res.json()['candidates'][0]['content']['parts'][0]['text']
+                        status.update(label="✅ 分析完成", state="complete")
+                        st.markdown(ans)
+                    else:
+                        st.error(f"連線失敗 ({res.status_code})")
+                        st.write("錯誤詳情：", res.json().get('error', {}).get('message', '未知錯誤'))
+                except Exception as e:
+                    st.error(f"連線超時，請重試：{str(e)}")
