@@ -1,84 +1,136 @@
 import streamlit as st
 import requests
+import json
 import pdfplumber
 import pandas as pd
+from docx import Document
 from PIL import Image
 import io
 import base64
+import time
 
-# 1. 基礎設定
-st.set_page_config(page_title="AI 財務稽核-Gemini 3 專版", layout="wide")
-st.title("⚖️ AI 財務全能稽核系統 (Gemini 3)")
+# 1. 網頁基本設定
+st.set_page_config(page_title="AI 財務稽核系統", layout="wide")
+st.title("⚖️ AI 財務全能稽核系統")
 
-# 2. 側邊欄
+# --- 2. 側邊欄設定 ---
 with st.sidebar:
     st.header("🔑 系統設定")
-    # 請點擊妳截圖左下角的 "Get API key" 來獲取 Key
-    api_key = st.text_input("請貼上新的 API Key", type="password").strip()
+    api_key = st.text_input("請貼上 API Key", type="password").strip()
     st.divider()
-    mode = st.radio("稽核邏輯", ["診所/門市公式", "深度疑點分析 (含桃竹區劇本)"])
-    st.info("💡 已依據您的截圖，將模型路徑修正為：gemini-3-flash-preview")
+    
+    analysis_mode = st.radio(
+        "選擇稽核邏輯：",
+        ["原本成功公式 (診所/門市專用)", "全新彈性風格 (智慧判定萬用型)"],
+        index=0
+    )
+    st.divider()
+    st.caption("版本: v2.4 (自動路徑修正版)")
 
-# 3. 檔案處理
+# --- 3. 核心功能定義 ---
 def process_file(f):
+    fname = f.name.lower()
     try:
-        if f.name.lower().endswith('.pdf'):
+        if fname.endswith('.pdf'):
             with pdfplumber.open(f) as pdf:
-                return "\n".join([p.extract_text() for p in pdf.pages if p.extract_text()]), None
-        elif f.name.lower().endswith(('.xlsx', '.xls')):
-            return f"表格數據:\n{pd.read_excel(f).to_string()}", None
-        elif f.name.lower().endswith(('.png', '.jpg', '.jpeg')):
+                text = "\n".join([p.extract_text() for p in pdf.pages if p.extract_text()])
+                return text, None
+        elif fname.endswith(('.xlsx', '.xls')):
+            df = pd.read_excel(f)
+            return f"Excel數據({f.name}):\n{df.to_string()}", None
+        elif fname.endswith('.docx'):
+            doc = Document(f)
+            return "\n".join([p.text for p in doc.paragraphs]), None
+        elif fname.endswith(('.png', '.jpg', '.jpeg')):
             img = Image.open(f).convert('RGB')
-            img.thumbnail((800, 800))
+            img.thumbnail((1000, 1000))
             buf = io.BytesIO()
-            img.save(buf, format="JPEG")
-            return None, base64.b64encode(buf.getvalue()).decode()
+            img.save(buf, format="JPEG", quality=80)
+            return f"[圖片附件: {f.name}]", base64.b64encode(buf.getvalue()).decode()
     except:
-        return f"無法解析檔案: {f.name}", None
+        return f"無法讀取檔案: {f.name}", None
     return "", None
 
-# 4. 主程式
-files = st.file_uploader("上傳簽呈、報價單或照片附件", accept_multiple_files=True)
+def create_word(content):
+    doc = Document()
+    doc.add_heading('AI 財務稽核分析報告', 0)
+    for line in content.split('\n'):
+        if line.strip().startswith('##'):
+            doc.add_heading(line.replace('#','').strip(), level=1)
+        elif line.strip():
+            doc.add_paragraph(line)
+    bio = io.BytesIO()
+    doc.save(bio)
+    return bio.getvalue()
+
+# --- 4. 主畫面：上傳與執行 ---
+files = st.file_uploader("上傳簽呈、附件或報價單", accept_multiple_files=True)
 
 if files:
-    all_text, all_img = [], []
-    for f in files:
-        t, i = process_file(f)
-        if t: all_text.append(t)
-        if i: all_img.append(i)
+    all_txt = []
+    all_img = []
+    with st.spinner("🔍 檔案解析中..."):
+        for f in files:
+            t, i = process_file(f)
+            if t: all_txt.append(t)
+            if i: all_img.append(i)
+    
+    context = "\n\n".join(all_txt)
 
-    if st.button("🚀 啟動 Gemini 3 深度稽核", type="primary"):
+    if st.button("🚀 開始智慧稽核", type="primary"):
         if not api_key:
-            st.error("請在側邊欄貼上 API Key")
+            st.error("請輸入 API Key")
         else:
-            # 針對妳的需求強化 Prompt
-            if mode == "診所/門市公式":
-                prompt = f"你是專業財務審核員。請核對資料並依格式總結：1.經確認... 2.費用由...。資料內容：\n{' '.join(all_text)}"
+            # 建立 Prompt
+            if "原本成功公式" in analysis_mode:
+                prompt = f"""你是一位嚴謹的財務審核員。最後請務必嚴格使用此格式總結：
+                ## 財務審核結論
+                1.經確認報價單及簽呈內容無誤，本年度合作診所共[數量]間，另含門市[數量]間，費用共[總額]元。較114年度[去年額]元增加約[百分比]，係[原因]所致。
+                2.費用由各家合作診所自行申請([診小計]元)，大學光僅須負擔[門市小計]元。
+                資料：{context}"""
             else:
-                prompt = f"""你是資深財務稽核主管。請針對提供的報價單與簽呈進行分析：
-                1. 財務審核結論：進行比價分析，並特別針對「桃竹區(如藝文、竹北店)」的新增費用進行合理性評估。
-                2. 不合理檢核點：找出金額異常、公式錯誤或跨區單價顯著差異之處。
-                3. 建議詢問劇本：針對上述疑點，寫出專業且能讓申請人無法迴避的詢問台詞。
-                資料內容：\n{' '.join(all_text)}"""
+                prompt = f"""你是一位財務審核專家。請分析資料並彈性產出結論。
+                請參考風格：比對年度增減、提醒稅務風險(5%營業稅)、人數變動影響、公式糾錯。
+                ## 財務審核結論
+                (請根據資料彈性撰寫)
+                資料：{context}"""
 
-            # 【關鍵修復】使用截圖中顯示的模型路徑
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={api_key}"
-            
-            payload = {
-                "contents": [{
-                    "parts": [{"text": prompt}] + [{"inline_data": {"mime_type": "image/jpeg", "data": i}} for i in all_img]
-                }]
-            }
-            
-            with st.status("🛸 Gemini 3 正在進行深度勾稽...") as status:
+            with st.status("🛸 正在自動偵測可用模型...") as status:
+                # 【新邏輯】先獲取可用模型列表
+                list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
                 try:
-                    res = requests.post(url, json=payload, timeout=60)
+                    models_res = requests.get(list_url).json()
+                    # 從列表中找一個包含 'flash' 的模型名稱
+                    model_list = models_res.get('models', [])
+                    target_model = None
+                    for m in model_list:
+                        if 'flash' in m['name'] and 'generateContent' in m['supportedGenerationMethods']:
+                            target_model = m['name'] # 這是完整的路徑格式，如 "models/gemini-1.5-flash"
+                            break
+                    
+                    if not target_model:
+                        target_model = "models/gemini-1.5-flash" # 保底選項
+
+                    # 正確的發送 URL
+                    url = f"https://generativelanguage.googleapis.com/v1beta/{target_model}:generateContent?key={api_key}"
+                    
+                    user_parts = [{"text": prompt}]
+                    for b64 in all_img:
+                        user_parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
+                    
+                    payload = {"contents": [{"parts": user_parts}]}
+                    
+                    status.update(label=f"📡 使用模型: {target_model} 分析中...")
+                    res = requests.post(url, json=payload, timeout=120)
+                    res_data = res.json()
+                    
                     if res.status_code == 200:
-                        ans = res.json()['candidates'][0]['content']['parts'][0]['text']
+                        ans = res_data['candidates'][0]['content']['parts'][0]['text']
                         status.update(label="✅ 分析完成", state="complete")
                         st.markdown(ans)
+                        st.download_button("📥 下載 Word 報告", create_word(ans), "Report.docx")
                     else:
-                        st.error(f"連線失敗 ({res.status_code})")
-                        st.write("錯誤詳情：", res.json().get('error', {}).get('message', '未知錯誤'))
+                        st.error(f"API 錯誤: {res_data.get('error', {}).get('message', '未知錯誤')}")
+                        st.write(res_data)
                 except Exception as e:
-                    st.error(f"連線超時，請重試：{str(e)}")
+                    st.error(f"執行失敗：{str(e)}")
