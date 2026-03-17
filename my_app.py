@@ -6,16 +6,26 @@ from PIL import Image
 import io
 
 # --- 1. 基本設定 ---
-st.set_page_config(page_title="AI 財務稽核 v5.5", layout="wide")
+st.set_page_config(page_title="AI 財務稽核 v6.0", layout="wide")
 st.title("⚖️ AI 財務全能稽核系統")
 
 # --- 2. 側邊欄 ---
 with st.sidebar:
     st.header("🔑 系統設定")
-    api_key = st.text_input("請貼上 API Key", type="password").strip()
+    api_key = st.text_input("請貼上「新」的 API Key", type="password").strip()
     st.divider()
-    mode = st.radio("選擇稽核邏輯：", ["診所/門市公式", "深度疑點分析 (含桃竹區劇本)"], index=1)
-    st.caption("連線模式：全自動相容偵測")
+    mode = st.radio("稽核邏輯", ["診所/門市公式", "深度疑點分析 (含桃竹區劇本)"], index=1)
+    if st.button("🛠️ 診斷我的 API Key 權限"):
+        if api_key:
+            try:
+                genai.configure(api_key=api_key)
+                models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                st.write("您的 Key 可以使用的模型清單：")
+                st.json(models)
+            except Exception as e:
+                st.error(f"診斷失敗：{str(e)}")
+        else:
+            st.warning("請先輸入 Key")
 
 # --- 3. 檔案處理 ---
 def process_file(f):
@@ -29,12 +39,12 @@ def process_file(f):
             img = Image.open(f).convert('RGB')
             img.thumbnail((800, 800))
             return None, img
-    except Exception as e:
+    except:
         return f"無法解析: {f.name}", None
     return "", None
 
 # --- 4. 主程式 ---
-files = st.file_uploader("上傳檔案", accept_multiple_files=True)
+files = st.file_uploader("上傳簽呈或報價單", accept_multiple_files=True)
 
 if files:
     all_content = []
@@ -49,33 +59,23 @@ if files:
         else:
             try:
                 genai.configure(api_key=api_key)
+                # 這裡強制使用最保險的模型名稱
+                model = genai.GenerativeModel('gemini-1.5-flash')
                 
-                # 【關鍵修復：窮舉測試邏輯】
-                # 嘗試不同的模型名稱組合，避開 404
-                model_names = ['gemini-1.5-flash', 'models/gemini-1.5-flash', 'gemini-1.5-flash-latest']
-                success = False
-                
-                with st.status("🛸 正在尋找可用連線路徑...") as status:
-                    for name in model_names:
-                        try:
-                            model = genai.GenerativeModel(name)
-                            # 測試 Prompt
-                            prompt = "分析資料並給出稽核結論與詢問劇本：" if mode != "診所/門市公式" else "核對資料並依格式總結："
-                            response = model.generate_content([prompt] + all_content)
-                            
-                            status.update(label=f"✅ 已透過 {name} 連線成功", state="complete")
-                            st.markdown(response.text)
-                            success = True
-                            break # 成功就跳出循環
-                        except Exception as inner_e:
-                            if "404" in str(inner_e):
-                                continue # 404 就換下一個名字試
-                            else:
-                                raise inner_e # 其他錯誤就報出來
-                    
-                    if not success:
-                        st.error("所有模型路徑均返回 404。這通常代表您的 API Key 沒有該模型的存取權限。")
-                        st.info("💡 解決建議：請到 Google AI Studio (aistudio.google.com) 重新點擊 'Create API key'，並確認您可以手動在該網頁跑通 Gemini 1.5 Flash。")
+                # 設定 Prompt
+                if mode == "診所/門市公式":
+                    prompt = "財務審核：核對後請用原本的兩點格式總結（1.經確認...2.費用由...）。"
+                else:
+                    prompt = """資深財務稽核：請分析資料，並產出：
+                    1. 財務審核結論 (比價與稅務)。
+                    2. 不合理檢核點 (桃竹區異常、公式誤植)。
+                    3. 建議詢問劇本 (給申請人的專業反問)。"""
+
+                with st.status("🛸 正在分析...") as status:
+                    response = model.generate_content([prompt] + all_content)
+                    status.update(label="✅ 分析完成", state="complete")
+                    st.markdown(response.text)
             
             except Exception as e:
-                st.error(f"系統錯誤：{str(e)}")
+                st.error(f"分析失敗：{str(e)}")
+                st.info("💡 如果還是 404，請確認您在 AI Studio 申請時是選擇 'Free of charge' 方案。")
