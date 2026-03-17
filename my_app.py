@@ -63,10 +63,11 @@ if files:
                     target_model = None
                     
                     # 遍歷模型清單，找一個支援生成內容的 flash 模型
-                    for m in models_data.get('models', []):
-                        if 'gemini-1.5-flash' in m['name'] and 'generateContent' in m['supportedGenerationMethods']:
-                            target_model = m['name']
-                            break
+                    if 'models' in models_data:
+                        for m in models_data.get('models', []):
+                            if 'gemini-1.5-flash' in m['name'] and 'generateContent' in m['supportedGenerationMethods']:
+                                target_model = m['name']
+                                break
                     
                     if not target_model:
                         target_model = "models/gemini-1.5-flash" # 保底
