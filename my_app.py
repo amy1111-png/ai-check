@@ -2,84 +2,79 @@ import streamlit as st
 import requests
 import json
 import pdfplumber
+import pandas as pd
+from docx import Document
+from PIL import Image
 import io
+import base64
 
-st.set_page_config(page_title="AI 多檔案財務稽核", layout="wide")
-st.title("⚖️ AI 多檔案深度比對系統")
+st.set_page_config(page_title="AI 財務稽核-最終解決版", layout="wide")
+st.title("⚖️ AI 財務稽核 (自動路徑匹配版)")
 
-# --- 側邊欄設定 ---
-with st.sidebar:
-    st.header("🔑 權限設定")
-    api_key = st.text_input("請貼上 API Key", type="password").strip()
-    st.divider()
-    st.info("支援同時上傳多份 PDF，AI 將自動進行跨檔案數據比對。")
+api_key = st.sidebar.text_input("🔑 請貼上 API Key", type="password").strip()
+uploaded_files = st.file_uploader("上傳 PDF, Word, Excel 或照片", type=['pdf', 'docx', 'xlsx', 'xls', 'png', 'jpg', 'jpeg'], accept_multiple_files=True)
 
-# --- 檔案上傳 (開啟多選功能) ---
-uploaded_files = st.file_uploader(
-    "請上傳一份或多份 PDF 檔案", 
-    type=['pdf'], 
-    accept_multiple_files=True
-)
+def process_file(f):
+    fname = f.name.lower()
+    try:
+        if fname.endswith('.pdf'):
+            with pdfplumber.open(f) as pdf:
+                return "\n".join([p.extract_text() for p in pdf.pages if p.extract_text()]), None
+        elif fname.endswith(('.xlsx', '.xls')):
+            df = pd.read_excel(f)
+            return f"Excel數據:\n{df.to_string()}", None
+        elif fname.endswith('.docx'):
+            doc = Document(f)
+            return "\n".join([p.text for p in doc.paragraphs]), None
+        elif fname.endswith(('.png', '.jpg', '.jpeg')):
+            img = Image.open(f).convert('RGB')
+            img.thumbnail((1024, 1024))
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=75)
+            return f"[圖片: {f.name}]", base64.b64encode(buf.getvalue()).decode()
+    except Exception as e: return f"錯誤: {str(e)}", None
+    return "", None
 
 if uploaded_files:
-    all_extracted_text = ""
+    all_txt = []
+    all_img_parts = []
+    for f in uploaded_files:
+        t, i = process_file(f)
+        if t: all_txt.append(t)
+        if i: all_img_parts.append({"inline_data": {"mime_type": "image/jpeg", "data": i}})
     
-    # 建立多個頁籤：一個看原始文字，一個看 AI 分析
-    tab1, tab2 = st.tabs(["📄 提取內容預覽", "📊 AI 稽核報告"])
-    
-    with st.spinner("正在讀取所有檔案..."):
-        for f in uploaded_files:
-            try:
-                with pdfplumber.open(f) as pdf:
-                    file_text = f"\n\n=== 檔案名稱: {f.name} ===\n"
-                    for i, page in enumerate(pdf.pages):
-                        page_content = page.extract_text()
-                        if page_content:
-                            file_text += f"\n[第 {i+1} 頁]\n{page_content}"
-                    all_extracted_text += file_text
-            except Exception as e:
-                st.error(f"讀取 {f.name} 時出錯: {e}")
+    context = "\n\n".join(all_txt)
 
-    with tab1:
-        st.text_area("所有檔案合併內容：", all_extracted_text, height=400)
-        st.download_button(
-            "📥 下載合併後的文字檔",
-            all_extracted_text,
-            file_name="combined_text.txt"
-        )
-
-    with tab2:
-        if st.button("🚀 啟動跨檔案 AI 分析", type="primary"):
-            if not api_key:
-                st.warning("請在左側輸入 API Key 才能進行分析。")
-            else:
-                with st.status("正在連線 AI 進行跨檔案比對...", expanded=True) as status:
-                    # 使用之前測試成功的穩定路徑
-                    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    if st.button("🚀 啟動診斷並分析", type="primary"):
+        if not api_key:
+            st.error("請輸入 API Key")
+        else:
+            with st.status("🔍 正在偵測模型路徑...", expanded=True) as status:
+                # --- 第一步：抓取正確的模型名稱 ---
+                list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+                try:
+                    models_res = requests.get(list_url).json()
+                    # 從清單中找出包含 flash 的第一個模型
+                    target_model = next((m['name'] for m in models_res.get('models', []) if 'flash' in m['name']), None)
                     
-                    prompt = f"""
-                    你是一位專業的財務審核員。請從以下提供的多份檔案內容中，
-                    找出「113年」與「114年」的保費相關數據。
+                    if not target_model:
+                        # 如果找不到 flash，改找 pro
+                        target_model = next((m['name'] for m in models_res.get('models', []) if 'pro' in m['name']), "models/gemini-1.5-flash")
                     
-                    任務要求：
-                    1. 製作一個比對表格（包含項目、113年、114年、差額、變動率）。
-                    2. 若數據分布在不同檔案，請自動整合。
-                    3. 檢查加總是否正確，並提供審核建議。
+                    st.write(f"✅ 已鎖定模型名稱：`{target_model}`")
                     
-                    以下為檔案內容：
-                    {all_extracted_text}
-                    """
+                    # --- 第二步：使用正確名稱進行分析 ---
+                    final_url = f"https://generativelanguage.googleapis.com/v1beta/{target_model}:generateContent?key={api_key}"
+                    user_parts = [{"text": f"你是一位財務審核員。分析以下 113年 與 114年 保費數據並比對差異：\n\n{context}"}]
+                    user_parts.extend(all_img_parts)
                     
-                    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+                    res = requests.post(final_url, json={"contents": [{"parts": user_parts}]}, timeout=60)
                     
-                    try:
-                        res = requests.post(url, json=payload, timeout=60)
-                        if res.status_code == 200:
-                            status.update(label="✅ 分析完成！", state="complete")
-                            result = res.json()['candidates'][0]['content']['parts'][0]['text']
-                            st.markdown(result)
-                        else:
-                            st.error(f"分析失敗 ({res.status_code})")
-                            st.json(res.json())
-                    except Exception as e:
-                        st.error(f"連線錯誤: {e}")
+                    if res.status_code == 200:
+                        status.update(label="🎉 分析完成！", state="complete")
+                        st.markdown(res.json()['candidates'][0]['content']['parts'][0]['text'])
+                    else:
+                        st.error(f"分析失敗 ({res.status_code}): {res.text}")
+                        
+                except Exception as e:
+                    st.error(f"連線診斷失敗: {str(e)}")
