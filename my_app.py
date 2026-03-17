@@ -9,7 +9,7 @@ import io
 import base64
 import time
 
-# 1. 網頁基本設定 (這必須在所有 streamlit 指令最前面)
+# 1. 網頁基本設定
 st.set_page_config(page_title="AI 財務稽核系統", layout="wide")
 st.title("⚖️ AI 財務全能稽核系統")
 
@@ -25,7 +25,7 @@ with st.sidebar:
         index=0
     )
     st.divider()
-    st.caption("版本: v2.3 (穩定版)")
+    st.caption("版本: v2.4 (自動路徑修正版)")
 
 # --- 3. 核心功能定義 ---
 def process_file(f):
@@ -95,20 +95,35 @@ if files:
                 (請根據資料彈性撰寫)
                 資料：{context}"""
 
-            with st.status("🛸 AI 思考中...") as status:
-                # 使用最穩定的 v1 URL
-                url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
-                
-                user_parts = [{"text": prompt}]
-                for b64 in all_img:
-                    user_parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
-                
-                payload = {"contents": [{"parts": user_parts}]}
-                headers = {"Content-Type": "application/json"}
-                
+            with st.status("🛸 正在自動偵測可用模型...") as status:
+                # 【新邏輯】先獲取可用模型列表
+                list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
                 try:
-                    res = requests.post(url, headers=headers, json=payload, timeout=120)
+                    models_res = requests.get(list_url).json()
+                    # 從列表中找一個包含 'flash' 的模型名稱
+                    model_list = models_res.get('models', [])
+                    target_model = None
+                    for m in model_list:
+                        if 'flash' in m['name'] and 'generateContent' in m['supportedGenerationMethods']:
+                            target_model = m['name'] # 這是完整的路徑格式，如 "models/gemini-1.5-flash"
+                            break
+                    
+                    if not target_model:
+                        target_model = "models/gemini-1.5-flash" # 保底選項
+
+                    # 正確的發送 URL
+                    url = f"https://generativelanguage.googleapis.com/v1beta/{target_model}:generateContent?key={api_key}"
+                    
+                    user_parts = [{"text": prompt}]
+                    for b64 in all_img:
+                        user_parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64}})
+                    
+                    payload = {"contents": [{"parts": user_parts}]}
+                    
+                    status.update(label=f"📡 使用模型: {target_model} 分析中...")
+                    res = requests.post(url, json=payload, timeout=120)
                     res_data = res.json()
+                    
                     if res.status_code == 200:
                         ans = res_data['candidates'][0]['content']['parts'][0]['text']
                         status.update(label="✅ 分析完成", state="complete")
@@ -116,5 +131,6 @@ if files:
                         st.download_button("📥 下載 Word 報告", create_word(ans), "Report.docx")
                     else:
                         st.error(f"API 錯誤: {res_data.get('error', {}).get('message', '未知錯誤')}")
+                        st.write(res_data)
                 except Exception as e:
                     st.error(f"執行失敗：{str(e)}")
