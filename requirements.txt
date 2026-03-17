@@ -5,3 +5,9 @@ python-docx
 pandas
 openpyxl
 Pillow
+google-generativeai
+streamlit
+pdfplumber
+pandas
+Pillow
+openpyxl
